@@ -65,3 +65,39 @@ export async function login(req, res, next) {
 export async function getMe(req, res) {
   res.json({ user: req.user });
 }
+
+export async function googleAuth(req, res, next) {
+  try {
+    const { accessToken } = req.body;
+    if (!accessToken) throw new ApiError(400, 'Access token required');
+
+    const r = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!r.ok) throw new ApiError(401, 'Invalid Google token');
+
+    const googleUser = await r.json();
+
+    let user = await User.findOne({ email: googleUser.email });
+    if (!user) {
+      user = await User.create({
+        fullName: googleUser.name,
+        email: googleUser.email,
+        googleId: googleUser.id,
+        role: 'trekker',
+      });
+    } else if (!user.googleId) {
+      user.googleId = googleUser.id;
+      await user.save();
+    }
+
+    const token = signToken(user._id);
+    res.json({
+      message: 'Google authentication successful',
+      token,
+      user: { id: user._id, fullName: user.fullName, email: user.email, role: user.role },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
