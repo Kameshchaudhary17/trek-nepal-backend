@@ -9,6 +9,7 @@ import conditionsRoutes from './routes/conditions.routes.js';
 import treksRoutes from './routes/treks.routes.js';
 import pricingRoutes from './routes/pricing.routes.js';
 import uploadRoutes from './routes/upload.routes.js';
+import bookingRoutes from './routes/bookings.routes.js';
 import { ApiError } from './utils/apiError.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -28,6 +29,7 @@ app.use('/api/conditions', conditionsRoutes);
 app.use('/api/treks', treksRoutes);
 app.use('/api/pricing', pricingRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('/api/bookings', bookingRoutes);
 
 // Global error handler
 app.use((err, req, res, next) => {
