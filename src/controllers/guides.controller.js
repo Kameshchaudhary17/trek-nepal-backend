@@ -81,6 +81,20 @@ export async function getGuideById(req, res, next) {
   }
 }
 
+/* ─── GET /api/guides/me  (protected, role=guide) ────────────────
+   Returns the current user's guide profile (or null if not created).
+─────────────────────────────────────────────────────────────────── */
+export async function getMyProfile(req, res, next) {
+  try {
+    const guide = await Guide.findOne({ user: req.user._id })
+      .populate('user', 'fullName email phone')
+      .lean();
+    res.json({ guide: guide || null });
+  } catch (err) {
+    next(err);
+  }
+}
+
 /* ─── PUT /api/guides/me/profile  (protected, role=guide) ────────
    Creates or updates the guide profile for the authenticated user.
 ─────────────────────────────────────────────────────────────────── */

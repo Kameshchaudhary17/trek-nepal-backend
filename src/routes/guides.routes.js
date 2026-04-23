@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   getGuides,
   getGuideById,
+  getMyProfile,
   upsertMyProfile,
   adminListGuides,
   adminSetGuideStatus,
@@ -11,6 +12,7 @@ import { protect, adminOnly } from '../middleware/auth.middleware.js';
 const router = Router();
 
 router.get('/', getGuides);
+router.get('/me', protect, getMyProfile);
 router.put('/me/profile', protect, upsertMyProfile);
 
 // Admin routes — must come before /:id
