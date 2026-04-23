@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import { User } from '../models/User.model.js';
+import { Guide } from '../models/Guide.model.js';
+import { Booking } from '../models/Booking.model.js';
 import { protect, adminOnly } from '../middleware/auth.middleware.js';
 
 const router = Router();
@@ -31,6 +33,63 @@ router.patch('/me', protect, async (req, res, next) => {
   }
 });
 
+// GET /api/users/admin/stats — dashboard overview counts + recent activity
+router.get('/admin/stats', protect, adminOnly, async (req, res, next) => {
+  try {
+    const [totalGuides, totalTrekkers, totalBookings, pendingVerification, revenueAgg] =
+      await Promise.all([
+        Guide.countDocuments({ status: 'verified' }),
+        User.countDocuments({ role: 'trekker' }),
+        Booking.countDocuments(),
+        Guide.countDocuments({ status: 'pending' }),
+        Booking.aggregate([
+          { $match: { status: { $in: ['confirmed', 'completed'] } } },
+          { $group: { _id: null, total: { $sum: '$totalCost' } } },
+        ]),
+      ]);
+
+    const revenue = revenueAgg[0]?.total || 0;
+
+    const [recentUsers, recentBookings] = await Promise.all([
+      User.find({})
+        .select('fullName role createdAt')
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .lean(),
+      Booking.find({})
+        .select('route status createdAt trekker')
+        .populate('trekker', 'fullName')
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .lean(),
+    ]);
+
+    const activity = [
+      ...recentUsers.map((u) => ({
+        id: `u-${u._id}`,
+        text: `${u.fullName} registered as a ${u.role}`,
+        time: u.createdAt,
+        icon: u.role === 'guide' ? '🧭' : '👤',
+      })),
+      ...recentBookings.map((b) => ({
+        id: `b-${b._id}`,
+        text: `${b.trekker?.fullName || 'A trekker'} booked ${b.route}`,
+        time: b.createdAt,
+        icon: '📋',
+      })),
+    ]
+      .sort((a, b) => new Date(b.time) - new Date(a.time))
+      .slice(0, 6);
+
+    res.json({
+      stats: { totalGuides, totalTrekkers, totalBookings, revenue, pendingVerification },
+      activity,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /api/users/admin/trekkers — all trekkers for admin panel
 router.get('/admin/trekkers', protect, adminOnly, async (req, res, next) => {
   try {
@@ -38,9 +97,10 @@ router.get('/admin/trekkers', protect, adminOnly, async (req, res, next) => {
 
     const filter = { role: 'trekker' };
     if (search) {
+      const safe = String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       filter.$or = [
-        { fullName: { $regex: search, $options: 'i' } },
-        { email:    { $regex: search, $options: 'i' } },
+        { fullName: { $regex: safe, $options: 'i' } },
+        { email:    { $regex: safe, $options: 'i' } },
       ];
     }
 

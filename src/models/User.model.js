@@ -27,7 +27,7 @@ const userSchema = new mongoose.Schema(
     role: {
       type: String,
       enum: ['trekker', 'guide', 'admin'],
-      default: 'admin',
+      default: 'trekker',
     },
     phone: {
       type: String,
@@ -57,6 +57,8 @@ const userSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+userSchema.index({ role: 1 });
 
 userSchema.pre('save', async function (next) {
   if (!this.isModified('password')) return next();

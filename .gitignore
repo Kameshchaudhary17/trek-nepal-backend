@@ -45,3 +45,13 @@ node_modules/
 .vscode/
 .idea/
 .DS_Store
+
+# Runtime-generated user uploads (served at runtime, not source)
+private/uploads/
+public/uploads/
+
+# Stray SSH keys — defensive safeguard
+ssh-ed25519*
+ssh-rsa*
+id_ed25519*
+id_rsa*

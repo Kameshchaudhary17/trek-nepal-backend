@@ -1,7 +1,14 @@
 import { Booking } from '../models/Booking.model.js';
 import { Guide } from '../models/Guide.model.js';
-import { User } from '../models/User.model.js';
+import PlatformConfig from '../models/PlatformConfig.model.js';
 import { ApiError } from '../utils/apiError.js';
+import { computeBookingCost } from '../utils/pricing.js';
+import {
+  sendNewBookingNotice,
+  sendBookingSubmitted,
+  sendBookingStatusChange,
+} from '../services/email.service.js';
+import { getStripe, isStripeConfigured } from '../config/stripe.js';
 
 const populateGuide = {
   path: 'guide',
@@ -19,26 +26,67 @@ export async function createBooking(req, res, next) {
 
     const { guideId, route, startDate, days, message } = req.body;
 
+    if (!guideId || !route || !startDate || !days) {
+      throw new ApiError(400, 'guideId, route, startDate and days are required');
+    }
+
+    const start = new Date(startDate);
+    if (Number.isNaN(start.getTime())) {
+      throw new ApiError(400, 'Invalid startDate');
+    }
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (start < today) {
+      throw new ApiError(400, 'startDate must be today or in the future');
+    }
+
+    const dayCount = Number(days);
+    if (!Number.isInteger(dayCount) || dayCount < 1 || dayCount > 90) {
+      throw new ApiError(400, 'days must be an integer between 1 and 90');
+    }
+
     const guide = await Guide.findById(guideId);
     if (!guide) throw new ApiError(404, 'Guide not found');
+    if (guide.status !== 'verified') {
+      throw new ApiError(400, 'This guide is not yet verified and cannot accept bookings');
+    }
 
     const ratePerDay = guide.ratePerDay || 0;
-    const totalCost = ratePerDay * Number(days);
+    const config = await PlatformConfig.findOne({}).lean();
+    const { totalCost, breakdown } = computeBookingCost({
+      ratePerDay,
+      days: dayCount,
+      startDate: start,
+      config,
+    });
 
     const booking = await Booking.create({
       trekker: req.user._id,
       guide: guide._id,
       route,
-      startDate,
-      days,
+      startDate: start,
+      days: dayCount,
       message,
       ratePerDay,
       totalCost,
+      costBreakdown: breakdown,
     });
 
     const populated = await Booking.findById(booking._id)
       .populate(populateGuide)
       .populate(populateTrekker);
+
+    // Fire-and-forget notifications — never block the response.
+    const trekkerEmail = populated?.trekker?.email;
+    const trekkerName  = populated?.trekker?.fullName;
+    const guideEmail   = populated?.guide?.user?.email;
+    const guideName    = populated?.guide?.user?.fullName;
+    if (trekkerEmail) {
+      sendBookingSubmitted({ to: trekkerEmail, trekkerName, guideName, booking: populated });
+    }
+    if (guideEmail) {
+      sendNewBookingNotice({ to: guideEmail, guideName, trekkerName, booking: populated });
+    }
 
     res.status(201).json({ booking: populated });
   } catch (err) {
@@ -104,6 +152,27 @@ export async function updateBookingStatus(req, res, next) {
       if (!['pending', 'confirmed'].includes(booking.status)) {
         throw new ApiError(400, 'Booking cannot be cancelled in its current state');
       }
+      // Payment-in-flight: refuse cancel so we don't race the webhook.
+      if (booking.paymentStatus === 'processing') {
+        throw new ApiError(409, 'Payment is in progress — please wait for it to finish before cancelling');
+      }
+      // Already-paid: refund via Stripe. Mark refunded only after Stripe accepts
+      // the request; the webhook will confirm the final state.
+      if (booking.paymentStatus === 'paid' && booking.stripePaymentIntentId) {
+        if (!isStripeConfigured()) {
+          throw new ApiError(503, 'Cannot refund — payments are not configured on this server');
+        }
+        try {
+          await getStripe().refunds.create({
+            payment_intent: booking.stripePaymentIntentId,
+            reason: 'requested_by_customer',
+          });
+          booking.paymentStatus = 'refunded';
+        } catch (err) {
+          console.error('[stripe] refund failed for booking', booking._id.toString(), err.message);
+          throw new ApiError(502, 'Refund could not be processed. Please contact support.');
+        }
+      }
     } else if (status === 'completed') {
       const guide = await Guide.findOne({ user: req.user._id });
       if (!guide || !guide._id.equals(booking.guide)) {
@@ -123,6 +192,25 @@ export async function updateBookingStatus(req, res, next) {
     const populated = await Booking.findById(booking._id)
       .populate(populateGuide)
       .populate(populateTrekker);
+
+    // Notify the *other* party of the change.
+    const trekkerEmail = populated?.trekker?.email;
+    const trekkerName  = populated?.trekker?.fullName;
+    const guideEmail   = populated?.guide?.user?.email;
+    const guideName    = populated?.guide?.user?.fullName;
+    const changedByTrekker = status === 'cancelled';
+    const recipient = changedByTrekker
+      ? { to: guideEmail,   name: guideName,   otherPartyName: trekkerName }
+      : { to: trekkerEmail, name: trekkerName, otherPartyName: guideName  };
+    if (recipient.to) {
+      sendBookingStatusChange({
+        to: recipient.to,
+        recipientName: recipient.name,
+        status,
+        otherPartyName: recipient.otherPartyName,
+        booking: populated,
+      });
+    }
 
     res.json({ booking: populated });
   } catch (err) {
