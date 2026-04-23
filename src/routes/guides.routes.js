@@ -6,6 +6,7 @@ import {
   upsertMyProfile,
   adminListGuides,
   adminSetGuideStatus,
+  getGuideNationalId,
 } from '../controllers/guides.controller.js';
 import { protect, adminOnly } from '../middleware/auth.middleware.js';
 
@@ -18,6 +19,7 @@ router.put('/me/profile', protect, upsertMyProfile);
 // Admin routes — must come before /:id
 router.get('/admin', protect, adminOnly, adminListGuides);
 router.patch('/admin/:id/status', protect, adminOnly, adminSetGuideStatus);
+router.get('/admin/:id/national-id', protect, adminOnly, getGuideNationalId);
 
 router.get('/:id', getGuideById);
 

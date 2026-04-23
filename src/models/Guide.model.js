@@ -25,6 +25,7 @@ const guideSchema = new mongoose.Schema(
     languages: { type: [String], default: ['English', 'Nepali'] },
     routes: { type: [String], default: [] },
     bio: { type: String, default: '' },
+    nationalIdPublicId: { type: String, default: '' },
     treksCompleted: { type: Number, default: 0, min: 0 },
     averageRating: { type: Number, default: 0, min: 0, max: 5 },
     reviewCount: { type: Number, default: 0, min: 0 },

@@ -17,12 +17,12 @@ function generateOtp() {
 }
 
 function userPayload(user) {
-  return { id: user._id, fullName: user.fullName, email: user.email, role: user.role };
+  return { id: user._id, fullName: user.fullName, email: user.email, role: user.role, profilePhoto: user.profilePhoto || '' };
 }
 
 export async function register(req, res, next) {
   try {
-    const { fullName, email, password, role, phone } = req.body;
+    const { fullName, email, password, role, phone, profilePhotoUrl, nationalIdPublicId } = req.body;
 
     const existing = await User.findOne({ email });
 
@@ -38,7 +38,12 @@ export async function register(req, res, next) {
     const otp = generateOtp();
     const otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 min
 
-    await User.create({ fullName, email, password, role, phone, otp, otpExpiry, isVerified: false });
+    await User.create({
+      fullName, email, password, role, phone,
+      profilePhoto: profilePhotoUrl || '',
+      nationalIdPublicId: nationalIdPublicId || '',
+      otp, otpExpiry, isVerified: false,
+    });
 
     await sendOtpEmail(email, otp);
 
@@ -53,7 +58,7 @@ export async function verifyOtp(req, res, next) {
     const { email, otp } = req.body;
     if (!email || !otp) throw new ApiError(400, 'Email and OTP are required');
 
-    const user = await User.findOne({ email }).select('+otp +otpExpiry');
+    const user = await User.findOne({ email }).select('+otp +otpExpiry +nationalIdPublicId');
     if (!user) throw new ApiError(404, 'No account found for this email');
     if (user.isVerified) throw new ApiError(400, 'Account already verified. Please log in');
     if (!user.otp || user.otp !== otp.toString()) throw new ApiError(400, 'Invalid OTP');
@@ -73,7 +78,10 @@ export async function verifyOtp(req, res, next) {
           ? (words[0][0] + words[words.length - 1][0]).toUpperCase()
           : user.fullName.slice(0, 2).toUpperCase();
         const color = AVATAR_COLORS[user._id.toString().charCodeAt(20) % AVATAR_COLORS.length];
-        await Guide.create({ user: user._id, initials, color });
+        await Guide.create({
+          user: user._id, initials, color,
+          nationalIdPublicId: user.nationalIdPublicId || '',
+        });
       }
     }
 
@@ -160,12 +168,14 @@ export async function googleAuth(req, res, next) {
         fullName: googleUser.name,
         email: googleUser.email,
         googleId: googleUser.id,
+        profilePhoto: googleUser.picture || '',
         role: 'trekker',
-        isVerified: true, // Google already verified the email
+        isVerified: true,
       });
     } else {
       if (!user.googleId) user.googleId = googleUser.id;
       if (!user.isVerified) user.isVerified = true;
+      if (!user.profilePhoto && googleUser.picture) user.profilePhoto = googleUser.picture;
       await user.save();
     }
 

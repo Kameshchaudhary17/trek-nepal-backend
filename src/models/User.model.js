@@ -33,6 +33,15 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: '',
     },
+    profilePhoto: {
+      type: String,
+      default: '',
+    },
+    nationalIdPublicId: {
+      type: String,
+      default: '',
+      select: false,
+    },
     isVerified: {
       type: Boolean,
       default: false,

@@ -1,5 +1,7 @@
 import { Guide } from '../models/Guide.model.js';
+import { User } from '../models/User.model.js';
 import { ApiError } from '../utils/apiError.js';
+import cloudinary from '../config/cloudinary.js';
 
 /* ─── GET /api/guides ─────────────────────────────────────────────
    Query params:
@@ -17,6 +19,7 @@ export async function getGuides(req, res, next) {
     const {
       search,
       region,
+      trek,
       language,
       minRating,
       verified,
@@ -29,6 +32,7 @@ export async function getGuides(req, res, next) {
     if (region) filter.region = region;
     if (language) filter.languages = language;
     if (minRating) filter.averageRating = { $gte: parseFloat(minRating) };
+    if (trek) filter.routes = new RegExp(trek.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
 
     const sortMap = {
       rating: { averageRating: -1 },
@@ -42,7 +46,7 @@ export async function getGuides(req, res, next) {
     const limitNum = Math.min(50, Math.max(1, parseInt(limit)));
 
     let guides = await Guide.find(filter)
-      .populate('user', 'fullName email')
+      .populate('user', 'fullName email profilePhoto')
       .sort(sortMap[sort] || { averageRating: -1 })
       .skip((pageNum - 1) * limitNum)
       .limit(limitNum)
@@ -70,7 +74,7 @@ export async function getGuides(req, res, next) {
 export async function getGuideById(req, res, next) {
   try {
     const guide = await Guide.findById(req.params.id)
-      .populate('user', 'fullName email phone')
+      .populate('user', 'fullName email phone profilePhoto')
       .lean();
 
     if (!guide) throw new ApiError(404, 'Guide not found');
@@ -87,7 +91,7 @@ export async function getGuideById(req, res, next) {
 export async function getMyProfile(req, res, next) {
   try {
     const guide = await Guide.findOne({ user: req.user._id })
-      .populate('user', 'fullName email phone')
+      .populate('user', 'fullName email phone profilePhoto')
       .lean();
     res.json({ guide: guide || null });
   } catch (err) {
@@ -114,6 +118,7 @@ export async function upsertMyProfile(req, res, next) {
       bio,
       treksCompleted,
       color,
+      profilePhoto,
     } = req.body;
 
     const fullName = req.user.fullName || '';
@@ -121,6 +126,10 @@ export async function upsertMyProfile(req, res, next) {
     const initials = words.length >= 2
       ? (words[0][0] + words[words.length - 1][0]).toUpperCase()
       : fullName.slice(0, 2).toUpperCase();
+
+    if (profilePhoto) {
+      await User.findByIdAndUpdate(req.user._id, { profilePhoto });
+    }
 
     const update = {
       specialty,
@@ -141,7 +150,7 @@ export async function upsertMyProfile(req, res, next) {
       { user: req.user._id },
       { $set: update },
       { new: true, upsert: true, runValidators: true }
-    ).populate('user', 'fullName email');
+    ).populate('user', 'fullName email profilePhoto');
 
     res.json({ guide });
   } catch (err) {
@@ -189,6 +198,27 @@ export async function adminListGuides(req, res, next) {
     statusCounts.forEach(({ _id, count }) => { if (_id) counts[_id] = count; });
 
     res.json({ guides, total: guides.length, page: pageNum, limit: limitNum, counts });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/* ─── GET /api/guides/admin/:id/national-id  (protected, role=admin) ─
+   Returns a short-lived signed URL for the guide's national ID document.
+─────────────────────────────────────────────────────────────────── */
+export async function getGuideNationalId(req, res, next) {
+  try {
+    const guide = await Guide.findById(req.params.id).lean();
+    if (!guide) throw new ApiError(404, 'Guide not found');
+    if (!guide.nationalIdPublicId) throw new ApiError(404, 'No national ID on file for this guide');
+
+    const url = cloudinary.url(guide.nationalIdPublicId, {
+      sign_url: true,
+      type: 'authenticated',
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+    });
+
+    res.json({ url });
   } catch (err) {
     next(err);
   }

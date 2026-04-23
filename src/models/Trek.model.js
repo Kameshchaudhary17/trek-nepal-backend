@@ -23,6 +23,7 @@ const trekSchema = new mongoose.Schema(
     desc:        { type: String, default: '' },
     highlights:  { type: [String], default: [] },
     permits:     { type: [permitSchema], default: [] },
+    photo:       { type: String, default: '' },
     active:      { type: Boolean, default: true },
   },
   { timestamps: true }
