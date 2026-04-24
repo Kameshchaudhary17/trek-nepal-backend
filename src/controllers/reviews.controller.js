@@ -2,6 +2,7 @@ import { Review } from '../models/Review.model.js';
 import { Booking } from '../models/Booking.model.js';
 import { Guide } from '../models/Guide.model.js';
 import { ApiError } from '../utils/apiError.js';
+import { createNotification } from './notifications.controller.js';
 
 async function recalcGuideRating(guideId) {
   const agg = await Review.aggregate([
@@ -51,6 +52,18 @@ export async function createReview(req, res, next) {
 
     await recalcGuideRating(booking.guide);
 
+    // Notify the guide (lives on Guide → User).
+    const guideDoc = await Guide.findById(booking.guide).select('user').lean();
+    if (guideDoc?.user) {
+      createNotification({
+        userId: guideDoc.user,
+        type:   'review.new',
+        title:  `You received a ${ratingNum}-star review`,
+        body:   comment.trim().slice(0, 120),
+        link:   '/guide/dashboard',
+      }).catch((e) => console.error('[notif] review.new failed:', e.message));
+    }
+
     res.status(201).json({ review });
   } catch (err) {
     // Duplicate-key race → translate to 409
@@ -77,6 +90,71 @@ export async function listGuideReviews(req, res, next) {
     ]);
 
     res.json({ reviews, total, page, limit });
+  } catch (err) {
+    next(err);
+  }
+}
+
+const EDIT_WINDOW_MS = 48 * 60 * 60 * 1000;
+
+/* PATCH /api/bookings/:bookingId/review
+   Trekker can edit their own review within 48h of first submission. */
+export async function updateReview(req, res, next) {
+  try {
+    const { bookingId } = req.params;
+    const { rating, comment } = req.body;
+
+    const review = await Review.findOne({ booking: bookingId });
+    if (!review) throw new ApiError(404, 'No review to edit');
+    if (!review.trekker.equals(req.user._id)) {
+      throw new ApiError(403, 'Only the author can edit this review');
+    }
+    if (Date.now() - new Date(review.createdAt).getTime() > EDIT_WINDOW_MS) {
+      throw new ApiError(400, 'Reviews can only be edited within 48 hours of submission');
+    }
+
+    if (rating !== undefined) {
+      const n = Number(rating);
+      if (!Number.isInteger(n) || n < 1 || n > 5) {
+        throw new ApiError(400, 'rating must be an integer between 1 and 5');
+      }
+      review.rating = n;
+    }
+    if (comment !== undefined) {
+      if (typeof comment !== 'string' || comment.length > 2000) {
+        throw new ApiError(400, 'comment must be a string up to 2000 chars');
+      }
+      review.comment = comment.trim();
+    }
+
+    await review.save();
+    await recalcGuideRating(review.guide);
+
+    res.json({ review });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/* DELETE /api/bookings/:bookingId/review
+   Trekker can delete their own review within 48h of first submission. */
+export async function deleteReview(req, res, next) {
+  try {
+    const { bookingId } = req.params;
+    const review = await Review.findOne({ booking: bookingId });
+    if (!review) throw new ApiError(404, 'No review to delete');
+    if (!review.trekker.equals(req.user._id)) {
+      throw new ApiError(403, 'Only the author can delete this review');
+    }
+    if (Date.now() - new Date(review.createdAt).getTime() > EDIT_WINDOW_MS) {
+      throw new ApiError(400, 'Reviews can only be deleted within 48 hours of submission');
+    }
+
+    const guideId = review.guide;
+    await Review.deleteOne({ _id: review._id });
+    await recalcGuideRating(guideId);
+
+    res.json({ message: 'Review deleted' });
   } catch (err) {
     next(err);
   }

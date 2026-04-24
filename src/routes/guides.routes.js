@@ -6,6 +6,7 @@ import {
   upsertMyProfile,
   getMyReviews,
   getMyEarnings,
+  reapplyForVerification,
   adminListGuides,
   adminSetGuideStatus,
   getGuideNationalId,
@@ -19,6 +20,7 @@ router.get('/me', protect, getMyProfile);
 router.put('/me/profile', protect, upsertMyProfile);
 router.get('/me/reviews',  protect, getMyReviews);
 router.get('/me/earnings', protect, getMyEarnings);
+router.post('/me/reapply', protect, reapplyForVerification);
 
 // Admin routes — must come before /:id
 router.get('/admin', protect, adminOnly, adminListGuides);

@@ -18,6 +18,7 @@ import reviewRoutes from './routes/reviews.routes.js';
 import paymentRoutes from './routes/payments.routes.js';
 import messageRoutes from './routes/messages.routes.js';
 import aiRoutes from './routes/ai.routes.js';
+import notificationRoutes from './routes/notifications.routes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -100,6 +101,7 @@ app.use('/api', reviewRoutes);
 // Messages attach to /bookings/:id/messages + /messages/unread — mount at /api
 app.use('/api', messageRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 // Global error handler — hide internals in production.
 app.use((err, req, res, _next) => {

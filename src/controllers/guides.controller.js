@@ -2,9 +2,11 @@ import { Guide } from '../models/Guide.model.js';
 import { User } from '../models/User.model.js';
 import { Booking } from '../models/Booking.model.js';
 import { Review } from '../models/Review.model.js';
+import PlatformConfig from '../models/PlatformConfig.model.js';
 import { ApiError } from '../utils/apiError.js';
 import cloudinary from '../config/cloudinary.js';
 import { CLOUDINARY_SIGNED_URL_TTL_SECONDS } from '../config/env.js';
+import { sendGuideRejected } from '../services/email.service.js';
 
 /* ─── GET /api/guides ─────────────────────────────────────────────
    Query params:
@@ -133,6 +135,28 @@ export async function upsertMyProfile(req, res, next) {
       color,
       profilePhoto,
     } = req.body;
+
+    // Validate ratePerDay (if supplied) falls inside one of the admin-defined
+    // guide-tier bands. Keeps the platform honest — no rogue pricing via curl.
+    if (ratePerDay !== undefined && ratePerDay !== null) {
+      const rate = Number(ratePerDay);
+      if (!Number.isFinite(rate) || rate < 0) {
+        throw new ApiError(400, 'ratePerDay must be a non-negative number');
+      }
+      const config = await PlatformConfig.findOne({}).select('guideTiers').lean();
+      const tiers = config?.guideTiers || [];
+      if (tiers.length > 0) {
+        const inBand = tiers.some(
+          (t) => rate >= (t.ratePerDay?.min ?? 0) && rate <= (t.ratePerDay?.max ?? Infinity)
+        );
+        if (!inBand) {
+          const ranges = tiers
+            .map((t) => `${t.label}: Rs. ${t.ratePerDay?.min}–${t.ratePerDay?.max}`)
+            .join(' · ');
+          throw new ApiError(400, `ratePerDay must fall within a guide tier band (${ranges})`);
+        }
+      }
+    }
 
     const fullName = req.user.fullName || '';
     const words = fullName.trim().split(/\s+/);
@@ -333,22 +357,70 @@ export async function getGuideNationalId(req, res, next) {
 }
 
 /* ─── PATCH /api/guides/admin/:id/status  (protected, role=admin) ─
-   Body: { status: 'pending' | 'verified' | 'rejected' }
-─────────────────────────────────────────────────────────────────── */
+   Body: { status: 'pending' | 'verified' | 'rejected', reason? }
+   When rejecting, `reason` is stored on the Guide and emailed to them.
+   When moving back to pending/verified, any prior reason is cleared. */
 export async function adminSetGuideStatus(req, res, next) {
   try {
-    const { status } = req.body;
+    const { status, reason } = req.body;
     if (!['pending', 'verified', 'rejected'].includes(status)) {
       throw new ApiError(400, 'status must be pending, verified, or rejected');
     }
 
+    const update = { status };
+    if (status === 'rejected') {
+      const trimmed = typeof reason === 'string' ? reason.trim() : '';
+      if (!trimmed) throw new ApiError(400, 'A rejection reason is required');
+      if (trimmed.length > 1000) throw new ApiError(400, 'Rejection reason too long (max 1000 chars)');
+      update.rejectionReason = trimmed;
+      update.rejectedAt = new Date();
+    } else {
+      // Clear any prior rejection metadata so the guide doesn't see stale copy.
+      update.rejectionReason = '';
+      update.rejectedAt = null;
+    }
+
     const guide = await Guide.findByIdAndUpdate(
       req.params.id,
-      { $set: { status } },
+      { $set: update },
       { new: true, runValidators: true }
     ).populate('user', 'fullName email phone');
 
     if (!guide) throw new ApiError(404, 'Guide not found');
+
+    // Fire-and-forget rejection notice.
+    if (status === 'rejected' && guide.user?.email) {
+      sendGuideRejected({
+        to: guide.user.email,
+        guideName: guide.user.fullName,
+        reason: update.rejectionReason,
+      });
+    }
+
+    res.json({ guide });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/* ─── POST /api/guides/me/reapply  (protected, role=guide) ─────────
+   Lets a rejected guide request re-verification. Moves their status
+   from 'rejected' → 'pending' and clears the stored reason. */
+export async function reapplyForVerification(req, res, next) {
+  try {
+    if (req.user.role !== 'guide') {
+      throw new ApiError(403, 'Only guides can re-apply');
+    }
+    const guide = await Guide.findOne({ user: req.user._id });
+    if (!guide) throw new ApiError(404, 'Guide profile not found');
+    if (guide.status !== 'rejected') {
+      throw new ApiError(400, 'Only rejected guides can re-apply');
+    }
+
+    guide.status = 'pending';
+    guide.rejectionReason = '';
+    guide.rejectedAt = null;
+    await guide.save();
 
     res.json({ guide });
   } catch (err) {

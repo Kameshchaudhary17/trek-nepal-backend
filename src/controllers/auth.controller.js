@@ -209,7 +209,7 @@ export async function forgotPassword(req, res, next) {
       user.otp = otp;
       user.otpExpiry = new Date(Date.now() + OTP_EXPIRY_MS);
       await user.save();
-      await sendOtpEmail(email, otp);
+      await sendOtpEmail(email, otp, { purpose: 'reset' });
     }
 
     res.json({

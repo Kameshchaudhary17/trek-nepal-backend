@@ -2,6 +2,8 @@ import { Message } from '../models/Message.model.js';
 import { Booking } from '../models/Booking.model.js';
 import { Guide } from '../models/Guide.model.js';
 import { ApiError } from '../utils/apiError.js';
+import { emitToBooking } from '../config/socket.js';
+import { createNotification } from './notifications.controller.js';
 
 /* Given a booking and the current user, return the other party's userId.
    Throws 403 if the current user isn't a participant. */
@@ -20,8 +22,10 @@ async function resolveCounterparty(booking, currentUserId) {
 
 /* GET /api/bookings/:bookingId/messages?after=<ISO>
    Returns messages in chronological order. If `after` is supplied, only
-   newer messages are returned — used by the frontend poll. Side effect:
-   marks all messages addressed to the current user as read. */
+   newer messages are returned — used by the frontend poll. Does NOT mark
+   messages as read; the client calls POST .../messages/read once the
+   messages are actually rendered, so we don't silently drop unreads when
+   a fetch fails mid-flight. */
 export async function listMessages(req, res, next) {
   try {
     const { bookingId } = req.params;
@@ -41,13 +45,28 @@ export async function listMessages(req, res, next) {
       .sort({ createdAt: 1 })
       .lean();
 
-    // Mark as read — only messages *to* me that are unread.
-    await Message.updateMany(
+    res.json({ messages });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/* POST /api/bookings/:bookingId/messages/read
+   Called once the client has rendered the messages. Marks every unread
+   message addressed to the caller as read. */
+export async function markMessagesRead(req, res, next) {
+  try {
+    const { bookingId } = req.params;
+    const booking = await Booking.findById(bookingId);
+    if (!booking) throw new ApiError(404, 'Booking not found');
+
+    await resolveCounterparty(booking, req.user._id); // auth check
+
+    const { modifiedCount } = await Message.updateMany(
       { booking: booking._id, to: req.user._id, readAt: null },
       { $set: { readAt: new Date() } }
     );
-
-    res.json({ messages });
+    res.json({ marked: modifiedCount });
   } catch (err) {
     next(err);
   }
@@ -86,6 +105,21 @@ export async function sendMessage(req, res, next) {
     const populated = await Message.findById(message._id)
       .populate('from', 'fullName profilePhoto')
       .lean();
+
+    // Real-time: push to anyone with this booking's chat open (both parties,
+    // including other devices of the sender for cross-device sync).
+    emitToBooking(booking._id, 'message:new', populated);
+
+    // Durable notification for the recipient's bell — also delivers when the
+    // recipient doesn't have the chat open.
+    const preview = populated.text.slice(0, 120);
+    createNotification({
+      userId: toUserId,
+      type:   'message.new',
+      title:  `New message from ${populated.from?.fullName || 'your chat partner'}`,
+      body:   preview,
+      link:   `/bookings`,
+    }).catch((e) => console.error('[notif] message failed:', e.message));
 
     res.status(201).json({ message: populated });
   } catch (err) {

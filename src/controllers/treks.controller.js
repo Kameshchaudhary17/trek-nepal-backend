@@ -9,11 +9,11 @@ export async function getTreks(req, res, next) {
     const filter = { active: true };
     if (region)     filter.region = region;
     if (difficulty) filter.difficulty = difficulty;
-    if (minDays || maxDays) {
-      filter.minDays = {};
-      if (minDays) filter.minDays.$gte = Number(minDays);
-      if (maxDays) filter.maxDays = { $lte: Number(maxDays) };
-    }
+    // minDays / maxDays are independent filters on the trek's duration bounds.
+    // Don't pre-init an empty object — a stray `filter.minDays = {}` matches
+    // nothing in Mongo.
+    if (minDays) filter.minDays = { $gte: Number(minDays) };
+    if (maxDays) filter.maxDays = { $lte: Number(maxDays) };
 
     const sortMap = {
       popular:  { createdAt: 1 },

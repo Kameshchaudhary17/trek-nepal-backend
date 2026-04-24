@@ -1,5 +1,6 @@
 import { Booking } from '../models/Booking.model.js';
 import { Guide } from '../models/Guide.model.js';
+import { User } from '../models/User.model.js';
 import PlatformConfig from '../models/PlatformConfig.model.js';
 import { ApiError } from '../utils/apiError.js';
 import { computeBookingCost } from '../utils/pricing.js';
@@ -9,6 +10,7 @@ import {
   sendBookingStatusChange,
 } from '../services/email.service.js';
 import { getStripe, isStripeConfigured } from '../config/stripe.js';
+import { createNotification } from './notifications.controller.js';
 
 const populateGuide = {
   path: 'guide',
@@ -81,11 +83,24 @@ export async function createBooking(req, res, next) {
     const trekkerName  = populated?.trekker?.fullName;
     const guideEmail   = populated?.guide?.user?.email;
     const guideName    = populated?.guide?.user?.fullName;
+    const guideUserId  = populated?.guide?.user?._id;
+
     if (trekkerEmail) {
       sendBookingSubmitted({ to: trekkerEmail, trekkerName, guideName, booking: populated });
     }
     if (guideEmail) {
       sendNewBookingNotice({ to: guideEmail, guideName, trekkerName, booking: populated });
+    }
+
+    // In-app notification — guide sees a bell alert for the new request.
+    if (guideUserId) {
+      createNotification({
+        userId: guideUserId,
+        type:   'booking.new',
+        title:  `New booking request from ${trekkerName}`,
+        body:   `${populated.route} · ${populated.days} day${populated.days === 1 ? '' : 's'}`,
+        link:   '/guide/dashboard',
+      }).catch((e) => console.error('[notif] booking.new failed:', e.message));
     }
 
     res.status(201).json({ booking: populated });
@@ -193,15 +208,18 @@ export async function updateBookingStatus(req, res, next) {
       .populate(populateGuide)
       .populate(populateTrekker);
 
-    // Notify the *other* party of the change.
+    // Notify the *other* party of the change — email + in-app.
     const trekkerEmail = populated?.trekker?.email;
     const trekkerName  = populated?.trekker?.fullName;
+    const trekkerId    = populated?.trekker?._id;
     const guideEmail   = populated?.guide?.user?.email;
     const guideName    = populated?.guide?.user?.fullName;
+    const guideUserId  = populated?.guide?.user?._id;
     const changedByTrekker = status === 'cancelled';
     const recipient = changedByTrekker
-      ? { to: guideEmail,   name: guideName,   otherPartyName: trekkerName }
-      : { to: trekkerEmail, name: trekkerName, otherPartyName: guideName  };
+      ? { to: guideEmail,   name: guideName,   userId: guideUserId,  otherPartyName: trekkerName, link: '/guide/dashboard' }
+      : { to: trekkerEmail, name: trekkerName, userId: trekkerId,    otherPartyName: guideName,   link: '/bookings' };
+
     if (recipient.to) {
       sendBookingStatusChange({
         to: recipient.to,
@@ -212,7 +230,88 @@ export async function updateBookingStatus(req, res, next) {
       });
     }
 
+    if (recipient.userId) {
+      const titleByStatus = {
+        confirmed: `${recipient.otherPartyName} confirmed your booking`,
+        rejected:  `${recipient.otherPartyName} declined your booking`,
+        cancelled: `${recipient.otherPartyName} cancelled the booking`,
+        completed: `Your trek with ${recipient.otherPartyName} is complete — leave a review`,
+      };
+      createNotification({
+        userId: recipient.userId,
+        type:   `booking.${status}`,
+        title:  titleByStatus[status] || 'Booking updated',
+        body:   `${populated.route} · ${populated.days} day${populated.days === 1 ? '' : 's'}`,
+        link:   recipient.link,
+      }).catch((e) => console.error('[notif] booking status failed:', e.message));
+    }
+
     res.json({ booking: populated });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/* ── GET /api/bookings/admin (admin only) ───────────────────────────
+   Query: status, paymentStatus, search (route/trekker/guide name),
+          from (ISO), to (ISO), page, limit (≤100).
+   Returns paginated bookings + per-status counts for the dashboard. */
+export async function adminListBookings(req, res, next) {
+  try {
+    const { status, paymentStatus, search, from, to } = req.query;
+    const page  = Math.max(1, parseInt(req.query.page)  || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 25));
+
+    const filter = {};
+    if (status)        filter.status        = status;
+    if (paymentStatus) filter.paymentStatus = paymentStatus;
+    if (from || to) {
+      filter.createdAt = {};
+      if (from) {
+        const d = new Date(from);
+        if (!Number.isNaN(d.getTime())) filter.createdAt.$gte = d;
+      }
+      if (to) {
+        const d = new Date(to);
+        if (!Number.isNaN(d.getTime())) filter.createdAt.$lte = d;
+      }
+      if (Object.keys(filter.createdAt).length === 0) delete filter.createdAt;
+    }
+
+    // Search matches route OR any linked user's fullName. Escape regex first.
+    if (search) {
+      const s = String(search);
+      if (s.length > 80) throw new ApiError(400, 'Search query too long (max 80 characters)');
+      const safe = s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const rx = new RegExp(safe, 'i');
+      const users = await User.find({ fullName: rx }, { _id: 1 }).lean();
+      const userIds = users.map((u) => u._id);
+      const guidesByUser = await Guide.find({ user: { $in: userIds } }, { _id: 1 }).lean();
+      const guideIds = guidesByUser.map((g) => g._id);
+      filter.$or = [
+        { route: rx },
+        { trekker: { $in: userIds } },
+        { guide: { $in: guideIds } },
+      ];
+    }
+
+    const [bookings, total, counts] = await Promise.all([
+      Booking.find(filter)
+        .populate({ path: 'trekker', select: 'fullName email' })
+        .populate({ path: 'guide', populate: { path: 'user', select: 'fullName email' }, select: 'user ratePerDay status' })
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+      Booking.countDocuments(filter),
+      Booking.aggregate([
+        { $group: { _id: '$status', count: { $sum: 1 } } },
+      ]),
+    ]);
+
+    const byStatus = counts.reduce((acc, r) => ({ ...acc, [r._id || 'unknown']: r.count }), {});
+
+    res.json({ bookings, total, page, limit, counts: byStatus });
   } catch (err) {
     next(err);
   }

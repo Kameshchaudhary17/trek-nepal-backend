@@ -3,6 +3,7 @@ import { User } from '../models/User.model.js';
 import { Guide } from '../models/Guide.model.js';
 import { Booking } from '../models/Booking.model.js';
 import { protect, adminOnly } from '../middleware/auth.middleware.js';
+import { ApiError } from '../utils/apiError.js';
 
 const router = Router();
 
@@ -42,8 +43,10 @@ router.get('/admin/stats', protect, adminOnly, async (req, res, next) => {
         User.countDocuments({ role: 'trekker' }),
         Booking.countDocuments(),
         Guide.countDocuments({ status: 'pending' }),
+        // Revenue = money actually collected. Only paid bookings count; a
+        // confirmed-but-unpaid booking is a reservation, not revenue.
         Booking.aggregate([
-          { $match: { status: { $in: ['confirmed', 'completed'] } } },
+          { $match: { paymentStatus: 'paid', status: { $in: ['confirmed', 'completed'] } } },
           { $group: { _id: null, total: { $sum: '$totalCost' } } },
         ]),
       ]);
@@ -97,6 +100,9 @@ router.get('/admin/trekkers', protect, adminOnly, async (req, res, next) => {
 
     const filter = { role: 'trekker' };
     if (search) {
+      if (String(search).length > 80) {
+        throw new ApiError(400, 'Search query too long (max 80 characters)');
+      }
       const safe = String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       filter.$or = [
         { fullName: { $regex: safe, $options: 'i' } },

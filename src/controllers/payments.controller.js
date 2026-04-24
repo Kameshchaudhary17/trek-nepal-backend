@@ -2,6 +2,7 @@ import { Booking } from '../models/Booking.model.js';
 import { Guide } from '../models/Guide.model.js';
 import { ApiError } from '../utils/apiError.js';
 import { getStripe, isStripeConfigured, STRIPE_CURRENCY } from '../config/stripe.js';
+import { createNotification } from './notifications.controller.js';
 
 /* POST /api/payments/intent/:bookingId
    Trekker-only. Creates (or retrieves) a Stripe PaymentIntent for the booking
@@ -111,9 +112,7 @@ export async function handleStripeWebhook(req, res) {
     switch (event.type) {
       case 'payment_intent.succeeded': {
         if (!bookingId) break;
-        // Idempotent: only move forward from unpaid/processing/failed → paid.
-        // Never regress from 'refunded' (a late retry after a refund must NOT re-mark paid).
-        await Booking.updateOne(
+        const updated = await Booking.findOneAndUpdate(
           { _id: bookingId, paymentStatus: { $in: ['unpaid', 'processing', 'failed'] } },
           {
             $set: {
@@ -121,31 +120,78 @@ export async function handleStripeWebhook(req, res) {
               amountPaid: (intent.amount_received ?? intent.amount) / 100,
               paidAt: new Date(),
             },
+          },
+          { new: true }
+        ).populate({ path: 'guide', select: 'user', populate: { path: 'user', select: '_id fullName' } });
+
+        if (updated) {
+          createNotification({
+            userId: updated.trekker,
+            type:   'payment.paid',
+            title:  'Payment confirmed',
+            body:   `${updated.route} · ${(updated.amountPaid || updated.totalCost).toLocaleString()} paid`,
+            link:   '/bookings',
+          }).catch((e) => console.error('[notif] payment.paid trekker:', e.message));
+          if (updated.guide?.user?._id) {
+            createNotification({
+              userId: updated.guide.user._id,
+              type:   'payment.paid',
+              title:  'Trekker has paid',
+              body:   `${updated.route} · booking secured`,
+              link:   '/guide/dashboard',
+            }).catch((e) => console.error('[notif] payment.paid guide:', e.message));
           }
-        );
+        }
         break;
       }
       case 'payment_intent.payment_failed': {
         if (!bookingId) break;
-        // Only mark failed if the intent hasn't already succeeded/refunded.
-        await Booking.updateOne(
+        const updated = await Booking.findOneAndUpdate(
           { _id: bookingId, paymentStatus: { $in: ['unpaid', 'processing'] } },
-          { $set: { paymentStatus: 'failed' } }
+          { $set: { paymentStatus: 'failed' } },
+          { new: true }
         );
+        if (updated) {
+          createNotification({
+            userId: updated.trekker,
+            type:   'payment.failed',
+            title:  'Payment failed',
+            body:   `${updated.route} — please try again or contact support.`,
+            link:   '/bookings',
+          }).catch((e) => console.error('[notif] payment.failed:', e.message));
+        }
         break;
       }
       case 'charge.refunded': {
-        // Look up booking via payment_intent on the charge.
         const pi = intent?.payment_intent;
         if (!pi) break;
-        await Booking.updateOne(
+        const updated = await Booking.findOneAndUpdate(
           { stripePaymentIntentId: pi, paymentStatus: { $ne: 'refunded' } },
-          { $set: { paymentStatus: 'refunded' } }
-        );
+          { $set: { paymentStatus: 'refunded' } },
+          { new: true }
+        ).populate({ path: 'guide', select: 'user', populate: { path: 'user', select: '_id' } });
+
+        if (updated) {
+          createNotification({
+            userId: updated.trekker,
+            type:   'payment.refunded',
+            title:  'Refund processed',
+            body:   `${updated.route} — the payment has been refunded.`,
+            link:   '/bookings',
+          }).catch(() => {});
+          if (updated.guide?.user?._id) {
+            createNotification({
+              userId: updated.guide.user._id,
+              type:   'payment.refunded',
+              title:  'Booking refunded',
+              body:   `${updated.route}`,
+              link:   '/guide/dashboard',
+            }).catch(() => {});
+          }
+        }
         break;
       }
       default:
-        // Ignore — Stripe sends a lot of events we don't care about.
         break;
     }
     res.json({ received: true });

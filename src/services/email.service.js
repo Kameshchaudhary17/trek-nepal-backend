@@ -81,27 +81,45 @@ async function sendMail({ to, subject, html }) {
 }
 
 /* ── OTP ─────────────────────────────────────────────────────────── */
-export async function sendOtpEmail(to, otp) {
-  const html = renderShell({
+const OTP_COPY = {
+  register: {
     eyebrow: 'Verification Code',
-    title: 'Verify your email address',
+    title:   'Verify your email address',
+    intro:   'Use the code below to complete your TrekDirect Nepal registration.',
+    subject: (otp) => `${otp} — your TrekDirect Nepal verification code`,
+    disclaimer: "If you didn't create an account on TrekDirect Nepal, you can safely ignore this email.",
+  },
+  reset: {
+    eyebrow: 'Password Reset',
+    title:   'Reset your password',
+    intro:   'Use the code below to reset your TrekDirect Nepal password.',
+    subject: (otp) => `${otp} — your TrekDirect Nepal password reset code`,
+    disclaimer: "If you didn't request a password reset, you can safely ignore this email.",
+  },
+};
+
+export async function sendOtpEmail(to, otp, { purpose = 'register' } = {}) {
+  const copy = OTP_COPY[purpose] || OTP_COPY.register;
+  const html = renderShell({
+    eyebrow: copy.eyebrow,
+    title: copy.title,
     preheader: `Your TrekDirect Nepal code: ${otp}`,
     bodyHtml: `
       <p style="margin:0 0 32px;font-size:15px;color:#9ab0a0;line-height:1.6;">
-        Use the code below to complete your TrekDirect Nepal registration. It expires in
+        ${copy.intro} It expires in
         <strong style="color:#f0e4c8;">${OTP_EXPIRY_MINUTES} minutes</strong>.
       </p>
       <div style="background:rgba(224,184,116,0.08);border:1px solid rgba(224,184,116,0.25);border-radius:12px;padding:24px;text-align:center;margin-bottom:32px;">
         <span style="font-size:40px;font-weight:700;letter-spacing:0.25em;color:#e0b874;font-family:'Courier New',monospace;">${otp}</span>
       </div>
-      <p style="margin:0 0 12px;font-size:13px;color:#6a8878;line-height:1.6;">If you didn't create an account on TrekDirect Nepal, you can safely ignore this email.</p>
+      <p style="margin:0 0 12px;font-size:13px;color:#6a8878;line-height:1.6;">${copy.disclaimer}</p>
       <p style="margin:0;font-size:13px;color:#6a8878;">Do not share this code with anyone.</p>`,
   });
 
   await getTransporter().sendMail({
     from: fromAddress(),
     to,
-    subject: `${otp} — your TrekDirect Nepal verification code`,
+    subject: copy.subject(otp),
     html,
   });
 }
@@ -138,6 +156,28 @@ export async function sendBookingSubmitted({ to, trekkerName, guideName, booking
       <p style="margin:0;font-size:13px;color:#6a8878;line-height:1.6;">Track status any time at ${process.env.APP_URL || 'http://localhost:5174'}/bookings</p>`,
   });
   await sendMail({ to, subject: `Booking request submitted — ${booking.route}`, html });
+}
+
+/* ── Guide rejected notice ───────────────────────────────────────── */
+export async function sendGuideRejected({ to, guideName, reason }) {
+  const html = renderShell({
+    eyebrow: 'Application update',
+    title: 'Your guide application needs attention',
+    preheader: 'Your TrekDirect Nepal application was not approved',
+    bodyHtml: `
+      <p style="margin:0 0 8px;font-size:15px;color:#9ab0a0;line-height:1.6;">Hi ${guideName || 'there'},</p>
+      <p style="margin:0 0 16px;font-size:15px;color:#9ab0a0;line-height:1.6;">
+        Thanks for applying to join TrekDirect Nepal. After review, your application wasn't approved. The team's note is below — you can address it and re-apply from your dashboard.
+      </p>
+      <div style="background:rgba(224,184,116,0.08);border:1px solid rgba(224,184,116,0.25);border-radius:12px;padding:16px 20px;margin:0 0 24px;">
+        <p style="margin:0 0 6px;font-size:11px;text-transform:uppercase;letter-spacing:0.18em;color:#e0b874;font-weight:600;">Reason</p>
+        <p style="margin:0;font-size:14px;color:#f5ead0;line-height:1.6;white-space:pre-wrap;">${reason || 'No reason provided.'}</p>
+      </div>
+      <p style="margin:0;font-size:13px;color:#6a8878;line-height:1.6;">
+        Once you've addressed the points above, sign in and press <strong style="color:#f0e4c8;">Re-apply</strong> on your guide dashboard.
+      </p>`,
+  });
+  await sendMail({ to, subject: 'TrekDirect Nepal — application update', html });
 }
 
 /* ── Status change (confirmed/rejected/cancelled/completed) ──────── */

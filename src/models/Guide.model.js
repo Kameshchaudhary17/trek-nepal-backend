@@ -16,12 +16,17 @@ const guideSchema = new mongoose.Schema(
     },
     experience: { type: Number, default: 0, min: 0 },
     ratePerDay: { type: Number, default: 0, min: 0 },
-    verified: { type: Boolean, default: false },
     status: {
       type: String,
       enum: ['pending', 'verified', 'rejected'],
       default: 'pending',
     },
+    rejectionReason: {
+      type: String,
+      default: '',
+      maxlength: 1000,
+    },
+    rejectedAt: { type: Date },
     languages: { type: [String], default: ['English', 'Nepali'] },
     routes: { type: [String], default: [] },
     bio: { type: String, default: '' },
@@ -35,7 +40,7 @@ const guideSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-guideSchema.index({ region: 1, verified: 1, averageRating: -1 });
+guideSchema.index({ region: 1, status: 1, averageRating: -1 });
 guideSchema.index({ ratePerDay: 1 });
 
 export const Guide = mongoose.model('Guide', guideSchema);
